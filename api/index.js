@@ -38430,6 +38430,17 @@ CREATE TABLE import_mapping_profiles (
       {
         name: "002_import_auto_create",
         sql: `ALTER TABLE simdondar_import_batches ADD COLUMN auto_create INTEGER NOT NULL DEFAULT 0;`
+      },
+      {
+        name: "003_round_double_numeric",
+        // SQLite ROUND(x, n) menerima double precision; Postgres 2-arg hanya menerima
+        // numeric. Definisikan overloading agar query aplikasi tetap kompatibel.
+        sql: `
+CREATE OR REPLACE FUNCTION round(x DOUBLE PRECISION, n INTEGER)
+RETURNS DOUBLE PRECISION
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT round(x::numeric, n)::double precision $$;`
       }
     ];
   }
@@ -321036,7 +321047,7 @@ dashboardRouter.get(
       `SELECT substr(e.occurred_at, 1, ${days > 62 ? 7 : 10}) AS period,                ROUND(SUM(CASE                  WHEN e.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  WHEN e.entry_type = 'REVERSAL' AND o.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  ELSE 0 END), 3) AS qty           FROM stock_entries e JOIN items i ON i.id = e.item_id           LEFT JOIN stock_entries o ON o.id = e.reversed_entry_id          WHERE e.occurred_at BETWEEN ? AND ? ${scopeSql}${entryItem.sql}          GROUP BY period ORDER BY period`
     ).all(from, to, ...consumptionParams);
     const topItems = db.prepare(
-      `SELECT i.id, i.name AS item_name, i.code AS item_code, u.code AS unit_code,                ROUND(SUM(CASE                  WHEN e.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  WHEN e.entry_type = 'REVERSAL' AND o.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  ELSE 0 END), 3) AS qty           FROM stock_entries e JOIN items i ON i.id = e.item_id           JOIN units u ON u.id = i.base_unit_id           LEFT JOIN stock_entries o ON o.id = e.reversed_entry_id          WHERE e.occurred_at BETWEEN ? AND ? ${scopeSql}${entryItem.sql}          GROUP BY i.id HAVING qty > 0 ORDER BY qty DESC LIMIT 8`
+      `SELECT i.id, i.name AS item_name, i.code AS item_code, u.code AS unit_code,                ROUND(SUM(CASE                  WHEN e.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  WHEN e.entry_type = 'REVERSAL' AND o.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  ELSE 0 END), 3) AS qty           FROM stock_entries e JOIN items i ON i.id = e.item_id           JOIN units u ON u.id = i.base_unit_id           LEFT JOIN stock_entries o ON o.id = e.reversed_entry_id          WHERE e.occurred_at BETWEEN ? AND ? ${scopeSql}${entryItem.sql}          GROUP BY i.id, i.name, i.code, u.code HAVING SUM(CASE                  WHEN e.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  WHEN e.entry_type = 'REVERSAL' AND o.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  ELSE 0 END) > 0 ORDER BY qty DESC LIMIT 8`
     ).all(from, to, ...consumptionParams);
     const stockByDepartment = db.prepare(
       `SELECT d.id, d.name AS department_name, ROUND(COALESCE(SUM(b.qty), 0), 3) AS qty           FROM departments d           LEFT JOIN department_stock_balances b ON b.department_id = d.id           LEFT JOIN items i ON i.id = b.item_id AND 1=1 ${balItem.sql}          WHERE d.is_active = 1            ${user.allDepartments ? "" : `AND d.id IN (${user.departmentIds.map(() => "?").join(",") || "NULL"})`}            ${input2.departmentId ? "AND d.id = ?" : ""}          GROUP BY d.id ORDER BY qty DESC`

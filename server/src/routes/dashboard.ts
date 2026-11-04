@@ -115,7 +115,7 @@ dashboardRouter.get(
       .all(from, to, ...consumptionParams);
     const topItems = db
       .prepare(
-        `SELECT i.id, i.name AS item_name, i.code AS item_code, u.code AS unit_code,                ROUND(SUM(CASE                  WHEN e.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  WHEN e.entry_type = 'REVERSAL' AND o.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  ELSE 0 END), 3) AS qty           FROM stock_entries e JOIN items i ON i.id = e.item_id           JOIN units u ON u.id = i.base_unit_id           LEFT JOIN stock_entries o ON o.id = e.reversed_entry_id          WHERE e.occurred_at BETWEEN ? AND ? ${scopeSql}${entryItem.sql}          GROUP BY i.id HAVING qty > 0 ORDER BY qty DESC LIMIT 8`,
+        `SELECT i.id, i.name AS item_name, i.code AS item_code, u.code AS unit_code,                ROUND(SUM(CASE                  WHEN e.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  WHEN e.entry_type = 'REVERSAL' AND o.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  ELSE 0 END), 3) AS qty           FROM stock_entries e JOIN items i ON i.id = e.item_id           JOIN units u ON u.id = i.base_unit_id           LEFT JOIN stock_entries o ON o.id = e.reversed_entry_id          WHERE e.occurred_at BETWEEN ? AND ? ${scopeSql}${entryItem.sql}          GROUP BY i.id, i.name, i.code, u.code HAVING SUM(CASE                  WHEN e.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  WHEN e.entry_type = 'REVERSAL' AND o.entry_type = 'CONSUMPTION' THEN -e.qty_delta                  ELSE 0 END) > 0 ORDER BY qty DESC LIMIT 8`,
       )
       .all(from, to, ...consumptionParams);
     const stockByDepartment = db

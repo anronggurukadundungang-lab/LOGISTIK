@@ -393,4 +393,15 @@ CREATE TABLE import_mapping_profiles (
     name: "002_import_auto_create",
     sql: `ALTER TABLE simdondar_import_batches ADD COLUMN auto_create INTEGER NOT NULL DEFAULT 0;`,
   },
+  {
+    name: "003_round_double_numeric",
+    // SQLite ROUND(x, n) menerima double precision; Postgres 2-arg hanya menerima
+    // numeric. Definisikan overloading agar query aplikasi tetap kompatibel.
+    sql: `
+CREATE OR REPLACE FUNCTION round(x DOUBLE PRECISION, n INTEGER)
+RETURNS DOUBLE PRECISION
+LANGUAGE sql
+IMMUTABLE
+AS $$ SELECT round(x::numeric, n)::double precision $$;`,
+  },
 ];
