@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import ExcelJS from "exceljs";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "../db.ts";
 import { getDb, nowIso, withTx } from "../db.ts";
 import { ApiError, ValidationError } from "../lib/http.ts";
 import { writeAudit, type AuthUser } from "../lib/auth.ts";

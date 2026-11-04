@@ -53,7 +53,9 @@ interface Row {
   minStock: number;
 }
 
-async function parseRows(filePath: string): Promise<Row[]> {
+async function parseRows(
+  filePath: string,
+): Promise<{ rows: Row[]; skipped: Array<{ row: number; reason: string }> }> {
   const workbook = new ExcelJS.Workbook();
   return workbook.xlsx.readFile(filePath).then((wb) => {
     const sheet = wb.worksheets[0];

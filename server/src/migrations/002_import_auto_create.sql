@@ -1,1 +1,0 @@
-ALTER TABLE simdondar_import_batches ADD COLUMN auto_create INTEGER NOT NULL DEFAULT 0;

@@ -1,4 +1,4 @@
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync } from "../db.ts";
 import { getDb } from "../db.ts";
 import { ApiError } from "./http.ts";
 

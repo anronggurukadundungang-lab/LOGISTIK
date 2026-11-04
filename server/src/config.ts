@@ -11,15 +11,16 @@ function envBool(value: string | undefined, fallback = false): boolean {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-const rawDbPath = process.env.DATABASE_PATH ?? "../data/stok.db";
+// DATABASE_PATH hanya dipakai sebagai penanda "database uji" (:memory:) oleh
+// db.ts. Database sebenarnya diatur lewat DATABASE_URL (PostgreSQL/Supabase).
+const databasePath = process.env.DATABASE_PATH ?? ":memory:";
 
 export const config = {
   serverRoot,
   projectRoot: path.resolve(serverRoot, ".."),
   port: Number(process.env.PORT ?? 3000),
   isProduction: process.env.NODE_ENV === "production",
-  databasePath:
-    rawDbPath === ":memory:" ? rawDbPath : path.resolve(serverRoot, rawDbPath),
+  databasePath,
   uploadsDir: path.resolve(serverRoot, "..", "uploads"),
   backupsDir: path.resolve(serverRoot, "..", "data", "backups"),
   clientDist: path.resolve(serverRoot, "..", "client", "dist"),
