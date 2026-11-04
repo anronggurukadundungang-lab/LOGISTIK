@@ -1,5 +1,6 @@
 import { Worker } from "node:worker_threads";
 import { createRequire } from "node:module";
+import path from "node:path";
 import { config } from "./config.ts";
 import "pg"; // efek samping: pastikan pg ikut ter-bundle (worker memuatnya via path).
 import { MIGRATIONS } from "./migrations/index.ts";
@@ -24,7 +25,9 @@ import { MIGRATIONS } from "./migrations/index.ts";
  * - INSERT mengembalikan `lastInsertRowid` via `RETURNING id` (tabel ber-kolom id)
  */
 
-const requirePg = createRequire(import.meta.url);
+const requirePg = createRequire(
+  path.resolve(process.cwd(), "package.json"),
+);
 const PG_PATH = requirePg.resolve("pg");
 
 export interface QueryRow {
@@ -39,7 +42,7 @@ const PAYLOAD_BYTES = 32 * 1024 * 1024; // 32 MB cukup untuk satu hasil query te
 
 const WORKER_SOURCE = String.raw`
 const { parentPort, workerData } = require("node:worker_threads");
-const pg = require(workerData.pgPath);
+const pg = require("pg");
 
 const shared = new Uint8Array(workerData.sharedBuffer);
 const signal = new Int32Array(workerData.sharedBuffer);

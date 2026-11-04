@@ -9,3 +9,7 @@ uploads/
 *.log
 .DS_Store
 docx_text.txt
+
+.vercel
+.env*
+api/index.cjs

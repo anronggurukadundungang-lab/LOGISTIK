@@ -2,7 +2,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 
-const serverRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+// serverRoot: folder server/ pada dev (ESM/tsx); pada bundle CJS (Vercel),
+// __dirname = folder output (api/) sehingga serverRoot = proyek.
+const serverRoot =
+  typeof __dirname === "string"
+    ? path.resolve(__dirname, "..")
+    : path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 dotenv.config({ path: path.join(serverRoot, "..", ".env") });
 dotenv.config({ path: path.join(serverRoot, ".env") });
 

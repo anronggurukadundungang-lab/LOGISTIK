@@ -9,7 +9,8 @@
     "migrate": "tsx src/scripts/migrate.ts",
     "seed": "tsx src/scripts/seed.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:api": "esbuild src/serverless.ts --bundle --platform=node --format=cjs --outfile=../api/index.cjs --external:pg-native --log-level=warning"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",
@@ -31,6 +32,7 @@
     "@types/pdfkit": "^0.13.9",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^6.0.3",
+    "esbuild": "^0.28.2",
     "supertest": "^7.1.4",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
