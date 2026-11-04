@@ -318294,6 +318294,67 @@ function confirmReceipt(user, transactionId, input2, meta3) {
     };
   });
 }
+function createManualReceipts(user, input2, meta3) {
+  if (!input2.lines.length)
+    throw new ValidationError("Minimal satu barang harus diisi.");
+  return withTx((tx) => {
+    const department = tx.prepare("SELECT id, name, is_active FROM departments WHERE id = ?").get(input2.departmentId);
+    if (!department || !department.is_active)
+      throw new ValidationError("Bagian tidak ditemukan atau nonaktif.");
+    const occurredAt = parseDateToIso(input2.occurredAt);
+    if (!occurredAt)
+      throw new ValidationError(`Tanggal "${input2.occurredAt}" tidak valid.`);
+    const created = [];
+    const seenItems = /* @__PURE__ */ new Set();
+    for (const line of input2.lines) {
+      if (seenItems.has(line.itemId)) {
+        throw new ValidationError(
+          "Ada barang yang sama muncul lebih dari sekali; gabungkan jumlahnya."
+        );
+      }
+      seenItems.add(line.itemId);
+      const item = tx.prepare("SELECT id, name, base_unit_id, is_active FROM items WHERE id = ?").get(line.itemId);
+      if (!item || !item.is_active)
+        throw new ValidationError(
+          `Barang ID ${line.itemId} tidak ditemukan atau nonaktif.`
+        );
+      const qty = roundQty(line.qty);
+      if (!Number.isFinite(qty) || qty <= 0)
+        throw new ValidationError(
+          `Jumlah untuk barang "${item.name}" harus lebih dari nol.`
+        );
+      const entry = postEntryTx(tx, {
+        departmentId: department.id,
+        itemId: item.id,
+        entryType: "RECEIPT",
+        qtyDelta: qty,
+        occurredAt,
+        sourceType: "MANUAL",
+        sourceId: null,
+        sourceRef: input2.docNumber ?? null,
+        description: `Penerimaan manual dari Logistik${input2.docNumber ? ` (${input2.docNumber})` : ""}`,
+        createdBy: user.id
+      });
+      created.push({ entryNo: entry.entry_no, item: item.name, qty });
+    }
+    writeAudit(tx, {
+      actor: user,
+      action: "MANUAL_RECEIPT_CREATED",
+      entityType: "stock_entries",
+      entityId: null,
+      after: {
+        department: department.name,
+        occurredAt,
+        docNumber: input2.docNumber ?? null,
+        lines: created
+      },
+      reason: input2.notes ?? null,
+      ip: meta3.ip,
+      userAgent: meta3.userAgent
+    });
+    return { created, department: department.name, occurredAt };
+  });
+}
 function findApproverIds(tx, departmentId, excludeUserId) {
   const rows = tx.prepare(
     `SELECT DISTINCT u.id
@@ -318581,7 +318642,10 @@ function extractPdfDepartment(items) {
   };
 }
 async function parseSimdondarPdf(buffer) {
-  const document2 = await getDocument({ data: new Uint8Array(buffer) }).promise;
+  const document2 = await getDocument({
+    data: new Uint8Array(buffer),
+    disableWorker: true
+  }).promise;
   const pageItems = [];
   const allText = [];
   for (let pageNumber = 1; pageNumber <= document2.numPages; pageNumber += 1) {
@@ -319755,6 +319819,35 @@ var confirmSchema = external_exports.object({
   qtyReceived: external_exports.coerce.number().positive().optional().nullable(),
   note: external_exports.string().trim().max(500).optional().nullable()
 });
+var manualReceiptSchema = external_exports.object({
+  departmentId: external_exports.coerce.number().int().positive(),
+  occurredAt: external_exports.string().trim().min(8),
+  docNumber: external_exports.string().trim().max(80).optional().nullable(),
+  notes: external_exports.string().trim().max(500).optional().nullable(),
+  lines: external_exports.array(
+    external_exports.object({
+      itemId: external_exports.coerce.number().int().positive(),
+      qty: external_exports.coerce.number().positive(),
+      note: external_exports.string().trim().max(300).optional().nullable()
+    })
+  ).min(1, "Minimal satu barang."),
+  // Langsung dikonfirmasi (saldo bertambah) atau menunggu konfirmasi bagian.
+  autoConfirm: external_exports.boolean().optional().default(true)
+});
+receiptsRouter.post(
+  "/receipts/manual",
+  requirePermission("receipts.confirm"),
+  asyncHandler(async (req, res) => {
+    const user = req.user;
+    const input2 = validate(manualReceiptSchema, req.body);
+    assertDepartmentAccess(user, input2.departmentId);
+    const result = createManualReceipts(user, input2, {
+      ip: clientIp(req),
+      userAgent: req.headers["user-agent"] ?? ""
+    });
+    res.status(201).json(result);
+  })
+);
 receiptsRouter.post(
   "/receipts/:id/confirm",
   requirePermission("receipts.confirm"),

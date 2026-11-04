@@ -2,7 +2,7 @@ import type { DatabaseSync } from "../db.ts";
 import { getDb, nowIso, withTx } from "../db.ts";
 import { ApiError, ValidationError } from "../lib/http.ts";
 import { writeAudit, type AuthUser } from "../lib/auth.ts";
-import { roundQty } from "../lib/utils.ts";
+import { roundQty, parseDateToIso } from "../lib/utils.ts";
 
 export type EntryType =
   | "RECEIPT"
@@ -544,8 +544,96 @@ export function confirmReceipt(
   });
 }
 
-export function findApproverIds(
-  tx: DatabaseSync,
+export interface ManualReceiptInput {
+  departmentId: number;
+  occurredAt: string;
+  docNumber?: string | null;
+  notes?: string | null;
+  lines: Array<{ itemId: number; qty: number; note?: string | null }>;
+}
+
+/**
+ * Input manual penerimaan barang dari Logistik (di luar impor SIMDONDAR).
+ * Langsung menambah saldo: hanya untuk pengguna dengan receipts.confirm dan
+ * akses bagian terkait. Tercatat di ledger dengan sourceType MANUAL.
+ */
+export function createManualReceipts(
+  user: AuthUser,
+  input: ManualReceiptInput,
+  meta: { ip?: string; userAgent?: string },
+) {
+  if (!input.lines.length)
+    throw new ValidationError("Minimal satu barang harus diisi.");
+  return withTx((tx) => {
+    const department = tx
+      .prepare("SELECT id, name, is_active FROM departments WHERE id = ?")
+      .get(input.departmentId) as
+      | { id: number; name: string; is_active: number }
+      | undefined;
+    if (!department || !department.is_active)
+      throw new ValidationError("Bagian tidak ditemukan atau nonaktif.");
+    const occurredAt = parseDateToIso(input.occurredAt);
+    if (!occurredAt)
+      throw new ValidationError(`Tanggal "${input.occurredAt}" tidak valid.`);
+
+    const created: Array<{ entryNo: string; item: string; qty: number }> = [];
+    const seenItems = new Set<number>();
+    for (const line of input.lines) {
+      if (seenItems.has(line.itemId)) {
+        throw new ValidationError(
+          "Ada barang yang sama muncul lebih dari sekali; gabungkan jumlahnya.",
+        );
+      }
+      seenItems.add(line.itemId);
+      const item = tx
+        .prepare("SELECT id, name, base_unit_id, is_active FROM items WHERE id = ?")
+        .get(line.itemId) as
+        | { id: number; name: string; base_unit_id: number; is_active: number }
+        | undefined;
+      if (!item || !item.is_active)
+        throw new ValidationError(
+          `Barang ID ${line.itemId} tidak ditemukan atau nonaktif.`,
+        );
+      const qty = roundQty(line.qty);
+      if (!Number.isFinite(qty) || qty <= 0)
+        throw new ValidationError(
+          `Jumlah untuk barang "${item.name}" harus lebih dari nol.`,
+        );
+      const entry = postEntryTx(tx, {
+        departmentId: department.id,
+        itemId: item.id,
+        entryType: "RECEIPT",
+        qtyDelta: qty,
+        occurredAt,
+        sourceType: "MANUAL",
+        sourceId: null,
+        sourceRef: input.docNumber ?? null,
+        description: `Penerimaan manual dari Logistik${input.docNumber ? ` (${input.docNumber})` : ""}`,
+        createdBy: user.id,
+      });
+      created.push({ entryNo: entry.entry_no, item: item.name, qty });
+    }
+
+    writeAudit(tx, {
+      actor: user,
+      action: "MANUAL_RECEIPT_CREATED",
+      entityType: "stock_entries",
+      entityId: null,
+      after: {
+        department: department.name,
+        occurredAt,
+        docNumber: input.docNumber ?? null,
+        lines: created,
+      },
+      reason: input.notes ?? null,
+      ip: meta.ip,
+      userAgent: meta.userAgent,
+    });
+    return { created, department: department.name, occurredAt };
+  });
+}
+
+export function findApproverIds(  tx: DatabaseSync,
   departmentId: number,
   excludeUserId?: number,
 ): number[] {

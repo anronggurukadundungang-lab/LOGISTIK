@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { CheckCircle2, PackageCheck, Search, TriangleAlert } from 'lucide-react';
+import { CheckCircle2, PackageCheck, Plus, Search, Trash2, TriangleAlert } from 'lucide-react';
 import { api } from '../lib/api';
 import { formatDate, formatNumber } from '../lib/format';
 import { useToast } from '../context/ToastContext';
-import type { Department, Meta, Paginated, SimdondarReceipt } from '../types';
+import type { Department, Item, Meta, Paginated, SimdondarReceipt } from '../types';
 import {
   Button,
   Card,
@@ -55,9 +55,77 @@ export function ReceiptsPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState('');
 
+  // Input manual penerimaan
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualDept, setManualDept] = useState('');
+  const [manualDate, setManualDate] = useState(new Date().toISOString().slice(0, 10));
+  const [manualDoc, setManualDoc] = useState('');
+  const [manualNotes, setManualNotes] = useState('');
+  const [manualLines, setManualLines] = useState<Array<{ itemId: string; qty: string }>>([{ itemId: '', qty: '' }]);
+  const [itemOptions, setItemOptions] = useState<Item[]>([]);
+  const [manualSaving, setManualSaving] = useState(false);
+  const [manualError, setManualError] = useState('');
+
   useEffect(() => {
     api.get<Meta>('/meta').then(setMeta).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (manualOpen && !itemOptions.length) {
+      api.get<{ items: Item[] }>('/items?all=1').then((r) => setItemOptions(r.items)).catch(() => undefined);
+    }
+  }, [manualOpen, itemOptions.length]);
+
+  const openManual = () => {
+    setManualOpen(true);
+    setManualDept(departmentId || '');
+    setManualDate(new Date().toISOString().slice(0, 10));
+    setManualDoc('');
+    setManualNotes('');
+    setManualLines([{ itemId: '', qty: '' }]);
+    setManualError('');
+  };
+
+  const submitManual = async () => {
+    setManualError('');
+    if (!manualDept) {
+      setManualError('Pilih bagian penerima.');
+      return;
+    }
+    const lines = manualLines
+      .map((line) => ({ itemId: Number(line.itemId), qty: Number(line.qty) }))
+      .filter((line) => line.itemId > 0);
+    if (!lines.length) {
+      setManualError('Minimal satu barang dengan jumlah lebih dari 0.');
+      return;
+    }
+    if (lines.some((line) => !Number.isFinite(line.qty) || line.qty <= 0)) {
+      setManualError('Semua jumlah barang harus lebih dari 0.');
+      return;
+    }
+    setManualSaving(true);
+    try {
+      const result = await api.post<{ created: Array<{ entryNo: string; item: string; qty: number }>; department: string }>(
+        '/receipts/manual',
+        {
+          departmentId: Number(manualDept),
+          occurredAt: manualDate,
+          docNumber: manualDoc || null,
+          notes: manualNotes || null,
+          lines,
+        },
+      );
+      toast.success(`${result.created.length} penerimaan manual tercatat untuk ${result.department}. Saldo stok bertambah.`);
+      setManualOpen(false);
+      setTab('RECEIVED');
+      setPage(1);
+      await load();
+    } catch (err) {
+      setManualError(err instanceof Error ? err.message : 'Gagal menyimpan penerimaan manual.');
+    } finally {
+      setManualSaving(false);
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -137,6 +205,11 @@ export function ReceiptsPage() {
       <PageHeader
         title="Penerimaan Barang"
         subtitle="Konfirmasi barang yang dikeluarkan SIMDONDAR ketika sudah diterima bagian. Saldo stok baru bertambah setelah dikonfirmasi."
+        actions={
+          <Button icon={<Plus className="h-4 w-4" />} onClick={openManual}>
+            Input Manual
+          </Button>
+        }
       />
 
       <Card>
@@ -288,6 +361,75 @@ export function ReceiptsPage() {
             ) : null}
           </div>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={manualOpen}
+        onClose={() => setManualOpen(false)}
+        title="Input Manual Penerimaan"
+        description="Catat barang keluar Logistik yang tidak tercatat di berkas SIMDONDAR. Saldo stok bagian langsung bertambah."
+        footer={
+          <>
+            <Button variant="outline" onClick={() => setManualOpen(false)}>Batal</Button>
+            <Button loading={manualSaving} onClick={() => void submitManual()} icon={<PackageCheck className="h-4 w-4" />}>
+              Simpan &amp; Tambah Stok
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Bagian penerima" required>
+              <Select value={manualDept} onChange={(event) => setManualDept(event.target.value)}>
+                <option value="">— Pilih bagian —</option>
+                {departments.filter((d) => d.is_active).map((d) => (
+                  <option key={d.id} value={d.id}>{d.name}</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Tanggal penerimaan" required>
+              <Input type="date" value={manualDate} onChange={(event) => setManualDate(event.target.value)} />
+            </Field>
+          </div>
+          <Field label="Nomor referensi / berita acara" hint="Opsional, misalnya nomor bukti keluar Logistik.">
+            <Input value={manualDoc} onChange={(event) => setManualDoc(event.target.value)} placeholder="Misalnya: BKL-2026-0012" />
+          </Field>
+
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <p className="text-sm font-medium text-slate-700">Barang diterima <span className="text-rose-600">*</span></p>
+              <Button size="sm" variant="outline" icon={<Plus className="h-3.5 w-3.5" />} onClick={() => setManualLines((current) => [...current, { itemId: '', qty: '' }])}>
+                Tambah baris
+              </Button>
+            </div>
+            <div className="space-y-2">
+              {manualLines.map((line, index) => (
+                <div key={index} className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <Select value={line.itemId} onChange={(event) => setManualLines((current) => current.map((item, i) => (i === index ? { ...item, itemId: event.target.value } : item)))}>
+                      <option value="">— Pilih barang —</option>
+                      {itemOptions.map((item) => (
+                        <option key={item.id} value={item.id}>{item.code} · {item.name}</option>
+                      ))}
+                    </Select>
+                  </div>
+                  <div className="w-28">
+                    <Input type="number" min="0" step="any" placeholder="Qty" value={line.qty} onChange={(event) => setManualLines((current) => current.map((item, i) => (i === index ? { ...item, qty: event.target.value } : item)))} />
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => setManualLines((current) => (current.length > 1 ? current.filter((_, i) => i !== index) : current))} disabled={manualLines.length === 1}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <Field label="Catatan" hint="Opsional, tersimpan pada audit trail.">
+            <Textarea value={manualNotes} onChange={(event) => setManualNotes(event.target.value)} placeholder="Misalnya: pengeluaran luar SIMDONDAR, barang hibah, atau penyesuaian awal." />
+          </Field>
+
+          {manualError ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{manualError}</div> : null}
+        </div>
       </Modal>
     </>
   );

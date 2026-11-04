@@ -9,7 +9,7 @@ import {
   parsePage,
   validate,
 } from "../lib/http.ts";
-import { confirmReceipt } from "../services/stock.ts";
+import { confirmReceipt, createManualReceipts } from "../services/stock.ts";
 import { requirePermission } from "../lib/session.ts";
 import { assertDepartmentAccess, writeAudit } from "../lib/auth.ts";
 export const receiptsRouter = Router();
@@ -84,6 +84,37 @@ const confirmSchema = z.object({
   qtyReceived: z.coerce.number().positive().optional().nullable(),
   note: z.string().trim().max(500).optional().nullable(),
 });
+const manualReceiptSchema = z.object({
+  departmentId: z.coerce.number().int().positive(),
+  occurredAt: z.string().trim().min(8),
+  docNumber: z.string().trim().max(80).optional().nullable(),
+  notes: z.string().trim().max(500).optional().nullable(),
+  lines: z
+    .array(
+      z.object({
+        itemId: z.coerce.number().int().positive(),
+        qty: z.coerce.number().positive(),
+        note: z.string().trim().max(300).optional().nullable(),
+      }),
+    )
+    .min(1, "Minimal satu barang."),
+  // Langsung dikonfirmasi (saldo bertambah) atau menunggu konfirmasi bagian.
+  autoConfirm: z.boolean().optional().default(true),
+});
+receiptsRouter.post(
+  "/receipts/manual",
+  requirePermission("receipts.confirm"),
+  asyncHandler(async (req, res) => {
+    const user = req.user!;
+    const input = validate(manualReceiptSchema, req.body);
+    assertDepartmentAccess(user, input.departmentId);
+    const result = createManualReceipts(user, input, {
+      ip: clientIp(req),
+      userAgent: req.headers["user-agent"] ?? "",
+    });
+    res.status(201).json(result);
+  }),
+);
 receiptsRouter.post(
   "/receipts/:id/confirm",
   requirePermission("receipts.confirm"),

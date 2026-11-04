@@ -1,6 +1,12 @@
 import crypto from "node:crypto";
 import ExcelJS from "exceljs";
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.mjs";
+// Muat worker pdfjs di thread utama: dengan menaruh WorkerMessageHandler di
+// globalThis, fake worker pdfjs tidak perlu meng-import file pdf.worker.mjs
+// (yang tidak tersedia pada bundle serverless single-file).
+// @ts-expect-error modul worker pdfjs tidak menyertakan deklarasi tipe
+import * as pdfjsWorker from "pdfjs-dist/legacy/build/pdf.worker.mjs";
+(globalThis as Record<string, unknown>).pdfjsWorker = pdfjsWorker;
 import type { DatabaseSync } from "../db.ts";
 import { getDb, nowIso, withTx } from "../db.ts";
 import { ApiError, ValidationError } from "../lib/http.ts";
@@ -313,7 +319,9 @@ function extractPdfDepartment(items: PdfTextItem[]): {
 }
 
 async function parseSimdondarPdf(buffer: Buffer): Promise<Array<Array<string | number | null>>> {
-  const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
+  // Worker pdfjs dimuat via globalThis (lihat import di atas) — opsi tambahan
+// tidak diperlukan di sini.
+const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
   const pageItems: PdfTextItem[][] = [];
   const allText: string[] = [];
 
