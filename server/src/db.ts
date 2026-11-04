@@ -7,12 +7,13 @@ import { MIGRATIONS } from "./migrations/index.ts";
 /**
  * API database sinkron (kompatibel node:sqlite) di atas PostgreSQL/Supabase.
  *
- * Query dieksekusi worker thread (source di WORKER_SOURCE di bawah) yang memegang
- * satu koneksi Postgres. Thread utama mengirim permintaan lalu menunggu dengan
- * Atomics.wait, sehingga `db.prepare(...).get/all/run` tetap bisa dipanggil
- * secara sinkron seperti sebelumnya — service dan route tidak perlu async.
- * Koneksi tunggal + serial menjaga semantik transaksi withTx (BEGIN/COMMIT pada
- * koneksi yang sama dengan semua query di dalamnya).
+ * Query dieksekusi worker thread (source di WORKER_SOURCE) yang memegang satu
+ * koneksi Postgres. Thread utama menunggu dengan Atomics.wait; worker menulis
+ * respons (JSON) langsung ke SharedArrayBuffer lalu menambah penghitung sinyal,
+ * sehingga hasilnya terbaca sinkron tanpa bergantung pada event loop. Dengan itu
+ * `db.prepare(...).get/all/run` tetap sinkron seperti node:sqlite — service dan
+ * route tidak perlu async. Koneksi tunggal + serial menjaga semantik transaksi
+ * withTx (BEGIN/COMMIT pada koneksi yang sama).
  *
  * Terjemahan SQL SQLite -> Postgres ada di WORKER_SOURCE:
  * - placeholder `?` -> `$1..$n`
@@ -30,30 +31,45 @@ export interface QueryRow {
   [key: string]: unknown;
 }
 
-interface WorkerResponse {
-  id: number;
-  ok: boolean;
-  rows?: QueryRow[];
-  rowCount?: number;
-  lastInsertRowid?: number;
-  error?: string;
-}
+const REQUEST_TIMEOUT_MS = 120_000;
 
-const REQUEST_TIMEOUT_MS = 60_000;
+/** Layout SAB: [0]=seq sinyal, [1]=panjang payload (byte), payload mulai byte ke-8. */
+const HEADER_BYTES = 8;
+const PAYLOAD_BYTES = 32 * 1024 * 1024; // 32 MB cukup untuk satu hasil query terbesar.
 
-/**
- * Worker di-inline sebagai source string (eval) agar tidak perlu file terpisah:
- * aman untuk bundler serverless (Vercel) yang tidak melacak `new Worker(url)`.
- * Kode di bawah adalah JavaScript CJS biasa yang berjalan di worker thread.
- */
 const WORKER_SOURCE = String.raw`
 const { parentPort, workerData } = require("node:worker_threads");
 const pg = require(workerData.pgPath);
 
+const shared = new Uint8Array(workerData.sharedBuffer);
+const signal = new Int32Array(workerData.sharedBuffer);
+const encoder = new TextEncoder();
+
+function respond(obj) {
+  let payload;
+  try {
+    payload = encoder.encode(JSON.stringify(obj));
+  } catch (error) {
+    payload = encoder.encode(JSON.stringify({ id: obj.id, ok: false, error: "Serialisasi respons gagal: " + error.message }));
+  }
+  if (payload.length > shared.byteLength - 8) {
+    payload = encoder.encode(JSON.stringify({ id: obj.id, ok: false, error: "Hasil query melebihi buffer " + Math.floor(shared.byteLength / 1048576) + " MB. Batasi jumlah baris query." }));
+  }
+  Atomics.store(signal, 1, payload.length);
+  shared.set(payload, 8);
+  Atomics.add(signal, 0, 1);
+  Atomics.notify(signal, 0);
+}
+
 function translateSql(input) {
   let sql = input;
+  sql = sql.replace(/^\s*BEGIN\s+IMMEDIATE\s*$/i, "BEGIN"); // SQLite -> Postgres
   sql = sql.replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, "INSERT INTO");
-  if (/^INSERT\s+INTO/i.test(sql.trim())) {
+  if (
+    /^INSERT\s+INTO/i.test(sql.trim()) &&
+    !/\bON\s+CONFLICT\b/i.test(sql) &&
+    !/\bRETURNING\b/i.test(sql)
+  ) {
     sql += " ON CONFLICT DO NOTHING";
   }
   sql = sql.replace(
@@ -126,7 +142,7 @@ async function main() {
     const schema = workerData.schemaName || "test";
     await client.query("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
     await client.query("CREATE SCHEMA " + schema);
-    await client.query("SET search_path TO " + schema);
+    await client.query("SET search_path TO " + schema + ", public");
     idColumnCache.clear();
   }
 
@@ -138,7 +154,7 @@ async function main() {
           .map((s) => s.trim())
           .filter((s) => s && !/^PRAGMA\b/i.test(s));
         for (const statement of statements) {
-          await client.query(statement);
+          await client.query(translateSql(statement));
         }
         return { id: request.id, ok: true, rows: [], rowCount: 0, lastInsertRowid: 0 };
       }
@@ -147,7 +163,7 @@ async function main() {
       const insertMatch = sql.match(/^INSERT\s+INTO\s+([a-zA-Z_][a-zA-Z0-9_]*)/i);
       if (insertMatch && !/\bRETURNING\b/i.test(sql)) {
         if (await tableHasIdColumn(client, insertMatch[1])) {
-          const result = await client.query(sql + " RETURNING id");
+          const result = await client.query(sql + " RETURNING id", values);
           const lastRow = result.rows[result.rows.length - 1];
           return {
             id: request.id,
@@ -172,21 +188,27 @@ async function main() {
   }
 
   parentPort.on("message", (request) => {
-    execute(request).then((response) => parentPort.postMessage(response));
+    if (process.env.DB_DEBUG === "1") {
+      console.log("[worker REQ]", request.id, JSON.stringify(request.sql).slice(0, 60), "params:", JSON.stringify(request.params));
+    }
+    execute(request).then(respond);
   });
 }
 
 main().catch((error) => {
-  parentPort.postMessage({ id: -1, ok: false, error: "Koneksi database gagal: " + error.message });
+  respond({ id: -1, ok: false, error: "Koneksi database gagal: " + error.message });
   process.exit(1);
 });
 `;
 
+const decoder = new TextDecoder();
+
 class SyncBridge {
   private readonly worker: Worker;
-  private readonly signal = new Int32Array(new SharedArrayBuffer(4));
+  private readonly sharedBuffer: SharedArrayBuffer;
+  private readonly signal: Int32Array;
+  private readonly payload: Uint8Array;
   private nextId = 1;
-  private pending: WorkerResponse | null = null;
   private initError: string | null = null;
 
   constructor(workerData: {
@@ -195,39 +217,35 @@ class SyncBridge {
     schemaName?: string;
     ssl?: boolean;
   }) {
+    this.sharedBuffer = new SharedArrayBuffer(HEADER_BYTES + PAYLOAD_BYTES);
+    this.signal = new Int32Array(this.sharedBuffer);
+    this.payload = new Uint8Array(this.sharedBuffer, HEADER_BYTES);
     this.worker = new Worker(WORKER_SOURCE, {
       eval: true,
-      workerData: { ...workerData, pgPath: PG_PATH },
-    });
-    this.worker.on("message", (response: WorkerResponse) => {
-      if (response.id === -1) {
-        this.initError = response.error ?? "Koneksi database gagal.";
-        Atomics.store(this.signal, 0, 1);
-        Atomics.notify(this.signal, 0);
-        return;
-      }
-      this.pending = response;
-      Atomics.add(this.signal, 0, 1);
-      Atomics.notify(this.signal, 0);
-    });
-    this.worker.on("error", (error) => {
-      this.initError = `Worker database error: ${error.message}`;
-      Atomics.store(this.signal, 0, 1);
-      Atomics.notify(this.signal, 0);
+      workerData: {
+        ...workerData,
+        pgPath: PG_PATH,
+        sharedBuffer: this.sharedBuffer,
+      },
     });
     this.worker.unref();
   }
 
+  private readResponse(): WorkerResponse {
+    const length = Atomics.load(this.signal, 1);
+    const bytes = this.payload.slice(0, length);
+    return JSON.parse(decoder.decode(bytes)) as WorkerResponse;
+  }
+
   private request(sql: string, params: Array<unknown>, multi: boolean): WorkerResponse {
     if (this.initError) throw new Error(this.initError);
-    const id = this.nextId;
-    this.nextId += 1;
-    this.pending = null;
     const seqBefore = Atomics.load(this.signal, 0);
-    this.worker.postMessage({ id, sql, params, multi });
-    if (Atomics.load(this.signal, 0) === seqBefore) {
+    this.worker.postMessage({ id: this.nextId, sql, params, multi });
+    this.nextId += 1;
+    const deadline = Date.now() + REQUEST_TIMEOUT_MS;
+    while (Atomics.load(this.signal, 0) === seqBefore) {
       const outcome = Atomics.wait(this.signal, 0, seqBefore, REQUEST_TIMEOUT_MS);
-      if (outcome === "timed-out") {
+      if (outcome === "timed-out" || Date.now() > deadline) {
         throw new Error(
           `Query database melebihi ${REQUEST_TIMEOUT_MS / 1000} detik: ${sql.slice(0, 120)}`,
         );
@@ -236,8 +254,11 @@ class SyncBridge {
         throw new Error(`Worker database terputus (status: ${outcome}).`);
       }
     }
-    const response = this.pending as WorkerResponse | null;
-    if (!response) throw new Error("Respons database tidak ditemukan.");
+    const response = this.readResponse();
+    if (response.id === -1) {
+      this.initError = response.error ?? "Koneksi database gagal.";
+      throw new Error(this.initError);
+    }
     if (!response.ok) throw new Error(response.error ?? "Query database gagal.");
     return response;
   }
@@ -267,6 +288,15 @@ class SyncBridge {
   }
 }
 
+interface WorkerResponse {
+  id: number;
+  ok: boolean;
+  rows?: QueryRow[];
+  rowCount?: number;
+  lastInsertRowid?: number;
+  error?: string;
+}
+
 let bridge: SyncBridge | null = null;
 
 function resolveConnectionString(databasePath: string): {
@@ -289,10 +319,10 @@ function resolveConnectionString(databasePath: string): {
   if (!url) {
     throw new Error(
       "DATABASE_URL tidak diatur. Isi connection string PostgreSQL (Supabase) pada .env, " +
-        "contoh: DATABASE_URL=postgresql://postgres.xxx:password@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres",
+        "contoh: DATABASE_URL=postgresql://postgres.xxx:password@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres",
     );
   }
-  // Izinkan PG supaya testing lokal (mis. PGlite/pglite-socket) tidak wajib SSL.
+  // DATABASE_SSL=require untuk Postgres non-Supabase yang mewajibkan SSL.
   const ssl = process.env.DATABASE_SSL === "require";
   return { connectionString: url, resetSchema: false, ssl };
 }

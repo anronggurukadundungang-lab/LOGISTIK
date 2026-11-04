@@ -105,6 +105,22 @@ async function main(): Promise<void> {
       console.log(`${table}: ${rows.length} baris disalin.`);
     }
   } finally {
+    // Reset sequence identity agar insert berikutnya tidak bentrok dengan ID hasil copy.
+    const idTables = await pgClient.query(
+      `SELECT table_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND column_name = 'id'
+          AND column_default LIKE 'nextval%'`,
+    );
+    for (const { table_name } of idTables.rows) {
+      const max = await pgClient.query(
+        `SELECT COALESCE(MAX(id), 0)::bigint AS m FROM ${table_name}`,
+      );
+      await pgClient.query(
+        `SELECT setval(pg_get_serial_sequence('${table_name}', 'id'), $1, true)`,
+        [max.rows[0].m],
+      );
+    }
+    console.log("Sequence identity direset ke MAX(id).");
     await pgClient.query("SET session_replication_role = DEFAULT");
     await pgClient.end();
     sqlite.close();

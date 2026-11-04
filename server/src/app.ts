@@ -4,7 +4,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import multer from "multer";
 import { config } from "./config.ts";
-import { getDb } from "./db.ts";
+import { getDb, runMigrations } from "./db.ts";
 import { seedBase } from "./seed.ts";
 import { ApiError, errorHandler } from "./lib/http.ts";
 import { attachUser, csrfProtection } from "./lib/session.ts";
@@ -116,5 +116,6 @@ export function createApp() {
 
 export function bootstrap() {
   getDb();
+  runMigrations();
   seedBase();
 }

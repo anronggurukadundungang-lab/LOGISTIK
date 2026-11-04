@@ -11,9 +11,9 @@ function envBool(value: string | undefined, fallback = false): boolean {
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-// DATABASE_PATH hanya dipakai sebagai penanda "database uji" (:memory:) oleh
-// db.ts. Database sebenarnya diatur lewat DATABASE_URL (PostgreSQL/Supabase).
-const databasePath = process.env.DATABASE_PATH ?? ":memory:";
+// DATABASE_PATH hanya penanda: ":memory:" = database uji (TEST_DATABASE_URL);
+// nilai lain = produksi/dev, koneksi memakai DATABASE_URL (PostgreSQL/Supabase).
+const databasePath = process.env.DATABASE_PATH ?? "postgres";
 
 export const config = {
   serverRoot,

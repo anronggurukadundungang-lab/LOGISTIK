@@ -6,19 +6,19 @@ Companion app for SIMDONDAR: monitors stock per department. UI, API errors, and 
 
 ```bash
 npm install
-copy .env.example .env   # Windows; cp on Linux/macOS
-npm run dev              # API :3000 + Vite :5173
+npm run dev              # API :3000 + Vite :5173 (butuh DATABASE_URL di server/.env)
 npm run typecheck        # server then client
-npm test                 # backend integration suite only
+npm test                 # backend integration suite (butuh TEST_DATABASE_URL)
 npm run build            # builds client to client/dist
 ```
 
 - Single test: `npm --workspace server run test -- tests/app.test.ts -t "menyajikan health check"`
 - Server dev: `npm run dev:server`; client dev: `npm run dev:client`
-- Production: `npm run build`, set `NODE_ENV=production` and a `SESSION_SECRET` of 32+ chars, then `npm start` (single port 3000, serves `client/dist` if present).
+- Tests run against Postgres (schema `test`); with a remote DB pass `--testTimeout=60000 --no-file-parallelism` (network RTT makes 5s default too short).
+- Production: `npm run build`, set `NODE_ENV=production` and a `SESSION_SECRET` of 32+ chars, then `npm start`. Deploy target is Vercel (`api/index.ts` + `vercel.json`); see `docs/DEPLOY.md`.
 - `npm run migrate` / `npm run seed` exist but are normally unnecessary: migrations run automatically on first `getDb()`/startup, and `seedBase()` is idempotent on every bootstrap.
+- Requires Node >=20 (Vercel runtime target; `node:sqlite` no longer used).
 - No lint, formatter, or CI config exists. Do not invent lint commands; verify with `typecheck` and `test`.
-- Requires Node >=24: the database uses the built-in `node:sqlite` module.
 
 ## Architecture
 
@@ -32,8 +32,11 @@ npm run build            # builds client to client/dist
 
 ## Database and domain rules
 
-- SQLite DB path is resolved relative to `server/`, not the repo root (`DATABASE_PATH` default `../data/stok.db`). `.env` is loaded from repo root first, then `server/.env`.
-- Migrations run automatically on first `getDb()` and on server startup. Add a new numbered `.sql` file to `server/src/migrations/`; the runner sorts filenames and records them in `schema_migrations`. Never edit an already-applied migration.
+- Database is **PostgreSQL (Supabase)** accessed through a synchronous compatibility layer in `server/src/db.ts` (worker thread + `Atomics.wait`, single connection). The old `node:sqlite` API (`prepare().get/all/run`, `exec`, `withTx`) is preserved — services/routes stay synchronous. SQL translation (SQLite → Postgres: `?`→`$n`, `INSERT OR IGNORE`→`ON CONFLICT DO NOTHING`, `GROUP_CONCAT`→`string_agg`, `COLLATE NOCASE`→citext, `BEGIN IMMEDIATE`→`BEGIN`) happens in `WORKER_SOURCE` inside `db.ts`.
+- Connection string is `DATABASE_URL` in `server/.env` (pooler port 6543 recommended; direct `db.*.supabase.co:5432` is IPv6-only and fails on most networks). Tests need `TEST_DATABASE_URL`; they reset the separate `test` schema (`DATABASE_PATH=:memory:` is the test-mode marker).
+- Schema lives in `server/src/migrations/index.ts` (TS module, not .sql files — needed for Vercel bundling). Add a new entry; never edit an applied one. Migrations run on `bootstrap()` and are recorded in `schema_migrations`.
+- After manual inserts with explicit IDs (e.g. `migrate-sqlite-to-pg.ts`), reset identity sequences (`setval` — the migration script does this automatically).
+- Transaction-mode pooler quirk: session-level `SET search_path` is not sticky across pooled server connections — qualify schema names in one-off verification scripts (`public.items`, not `items`).
 - `seedBase()` runs on every bootstrap and is idempotent; it creates the admin user only when the `users` table is empty.
 - Stock is an append-only ledger (`stock_entries`). `department_stock_balances` is only a cache. Use `postEntryTx`/`withTx` from `server/src/services/stock.ts` inside a transaction; never update balances directly.
 - Approval-gated flows (opname, adjustments, damage/loss, corrections) go through `approval_requests`; balances must not change until approval. Users cannot approve their own requests.
