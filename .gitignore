@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/backups/
+uploads/
+.env
+*.log
+.DS_Store
+docx_text.txt

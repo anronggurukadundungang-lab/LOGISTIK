@@ -1,0 +1,38 @@
+
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "vikey": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Vikey",
+      "options": {
+        "baseURL": "https://api.vikey.ai/v1",
+        "apiKey": "{env:vk-0a33519b-85d6-4e3d-a5f3-0f61cd11034b}"
+      },
+      "models": {
+        "deepseek/deepseek-v4-flash": {
+          "name": "DeepSeek V4 Flash",
+          "limit": {
+            "context": 1000000,
+            "output": 1000000
+          }
+        },
+        "glm/glm-5.3-flash": {
+          "name": "GLM-5.3 Flash",
+          "limit": {
+            "context": 1000000,
+            "output": 1000000
+          }
+        },
+        "openai/gpt-5.6-sol": {
+          "name": "GPT-5.6 Sol",
+          "limit": {
+            "context": 1000000,
+            "output": 1000000
+          }
+        }
+      }
+    }
+  },
+  "model": "vikey/deepseek/deepseek-v4-flash"
+}
